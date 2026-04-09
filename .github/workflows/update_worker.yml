@@ -22,7 +22,7 @@ jobs:
       issues: write
 
     steps:
-      - name: Checkout 仓库
+      - name: Checkout 仓库 # 检出仓库代码
         uses: actions/checkout@v6
 
       - name: 检查并初始化 update_type.txt # 检查并初始化 update_type.txt 文件

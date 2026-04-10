@@ -111,8 +111,6 @@ GitHub Actions 会每日 00:00（UTC 时间）自动运行：
 
 - 原项目版权归原作者所有，本项目仅用于自动同步更新，不对原内容进行修改。
 
-## Star Histor
-
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=glacier92xr/wk-cfnew-auto-update&type=Timeline)](https://www.star-history.com/#glacier92xr/wk-cfnew-auto-update&Timeline)

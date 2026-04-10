@@ -1,7 +1,6 @@
 name = "wk-cfnew-auto-update"
 main = "_worker.js"
 compatibility_date = "2026-01-20"
-usage_model = "bundled"
 workers_dev = true
 
 [[kv_namespaces]]

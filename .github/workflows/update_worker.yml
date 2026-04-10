@@ -192,6 +192,7 @@ jobs:
           npm install -g wrangler
           # 调试
           ls -la
+          cat wrangler.toml
           # 部署 Worker，使用 secret 中的环境变量，指定配置文件
           wrangler deploy --config wrangler.toml --var "u:${{ secrets.CF_VAR_U }}"
         env:

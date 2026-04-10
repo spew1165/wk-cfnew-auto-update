@@ -9,7 +9,11 @@
 node_modules/
 package-lock.json
 
-# 日志与临时文件
+# wrangler
+wr_modules/
+.wrangler/
+
+## 日志与临时文件
 *.log
 logs/
 Logs/

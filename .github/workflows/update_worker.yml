@@ -171,7 +171,7 @@ jobs:
 
       - name: 部署到 Cloudflare Workers # 部署到 Cloudflare Workers
         # 仅在需要更新时执行此步骤
-        # if: env.need_update == 'true'
+        if: env.need_update == 'true'
         run: |
           # 安装 wrangler
           npm install -g wrangler

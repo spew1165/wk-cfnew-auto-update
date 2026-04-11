@@ -4,7 +4,7 @@
   "private": true,
   "description": "Cloudflare Worker auto-update",
   "scripts": {
-    "deploy": "wrangler deploy",
+    "deploy": "wrangler deploy --no-bundle",
     "dev": "wrangler dev",
     "start": "wrangler dev"
   },

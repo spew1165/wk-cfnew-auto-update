@@ -3,19 +3,19 @@ main = "_worker.js"
 compatibility_date = "2026-01-20"
 workers_dev = true
 
-[vars]
-u = "cee6664d-c051-4a90-9d8c-8c47094192e5"
-
-
-[[kv_namespaces]]
-binding = "C"
-id = "f615ed236cb1471dacdcfc7068d55b86"
-
-
-[observability]
-[observability.logs]
-enabled = true
-invocation_logs = true
-
-[observability.traces]
-enabled = true
+#[vars]
+#u = "cee6664d-c051-4a90-9d8c-8c47094192e5"
+#
+#
+#[[kv_namespaces]]
+#binding = "C"
+#id = "f615ed236cb1471dacdcfc7068d55b86"
+#
+#
+#[observability]
+#[observability.logs]
+#enabled = true
+#invocation_logs = true
+#
+#[observability.traces]
+#enabled = true

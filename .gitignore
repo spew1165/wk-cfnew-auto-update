@@ -8,6 +8,7 @@
 # nodejs
 node_modules/
 package-lock.json
+.env
 
 # wrangler
 wr_modules/

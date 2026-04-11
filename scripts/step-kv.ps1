@@ -29,8 +29,8 @@ function Write-Err {
 
 function Generate-RandomSuffix {
     $chars = "0123456789abcdefghijklmnopqrstuvwxyz"
-    $result = ""
-    for ($i = 0; $i -lt 3; $i++) {
+    $result = "-"
+    for ($i = 0; $i -lt 4; $i++) {
         $result += $chars[(Get-Random -Maximum $chars.Length)]
     }
     return $result
@@ -50,7 +50,6 @@ function Test-KvExists {
         }
         return $false
     } catch {
-        Write-Log "Test-KvExists error: $_"
         return $false
     }
 }
@@ -58,20 +57,17 @@ function Test-KvExists {
 function New-KvNamespace {
     param([string]$Name)
 
-    Write-Log "Creating KV namespace: $Name"
+    Write-Log "Creating KV: $Name"
 
     $output = npx wrangler kv namespace create $Name --binding "C" --update-config 2>&1 | Out-String
 
-    Write-Log "Wrangler output: $output"
+    Write-Log "Output: $output"
 
     if ($output -match "id = `"(.*?)`"") {
-        $kvId = $matches[1]
-        Write-Log "Extracted KV ID: $kvId"
-        return $kvId
+        return $matches[1]
     }
 
-    Write-Err "Failed to extract KV ID from output"
-    Write-Err "Output was: $output"
+    Write-Err "Failed to extract KV ID"
     return $null
 }
 
@@ -87,11 +83,11 @@ function Update-WranglerToml {
 
     $content = Get-Content $WranglerToml -Raw -Encoding UTF8
 
-    $newContent = $content.TrimEnd() + "`n`n[[kv_namespaces]]`n`nbinding = `"C`"`nid = `"$KvId`""
+    $newContent = $content + "`n`n[[kv_namespaces]]`n`nbinding = `"C`"`nid = `"$KvId`""
 
     Set-Content -Path $WranglerToml -Value $newContent -Encoding UTF8 -NoNewline
 
-    Write-Log "wrangler.toml updated successfully"
+    Write-Log "wrangler.toml updated"
     return $true
 }
 
@@ -102,7 +98,6 @@ Write-Log "Starting KV creation for: $KvName"
 
 Set-Location $ProjectDir
 
-# Generate unique name
 $finalName = $KvName
 $maxAttempts = 10
 $attempt = 0
@@ -111,30 +106,27 @@ while ($attempt -lt $maxAttempts) {
     if (-not (Test-KvExists -Name $finalName)) {
         break
     }
-    Write-Log "KV '$finalName' exists, generating new name..."
     $suffix = Generate-RandomSuffix
     $finalName = "$KvName$suffix"
     $attempt++
 }
 
 if ($attempt -ge $maxAttempts) {
-    Write-Err "Failed to generate unique name after $maxAttempts attempts"
+    Write-Err "Failed to generate unique name"
     exit 1
 }
 
 Write-Host "Using KV name: $finalName" -ForegroundColor Yellow
 
-# Create KV
 $kvId = New-KvNamespace -Name $finalName
 
 if ([string]::IsNullOrEmpty($kvId)) {
-    Write-Err "Failed to create KV namespace"
+    Write-Err "Failed to create KV"
     exit 1
 }
 
-Write-Host "KV created with ID: $kvId" -ForegroundColor Green
+Write-Host "KV created: $kvId" -ForegroundColor Green
 
-# Update wrangler.toml
 $success = Update-WranglerToml -KvId $kvId
 
 if (-not $success) {
@@ -148,5 +140,5 @@ Write-Host "KV Name: $finalName"
 Write-Host "KV ID: $kvId"
 Write-Host "wrangler.toml: Updated"
 Write-Host ""
-Write-Host "Next: run 'npm run deploy' to deploy Worker"
-Write-Log "Script completed successfully"
+Write-Host "Next: npm run deploy"
+Write-Log "Done"

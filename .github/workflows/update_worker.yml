@@ -238,8 +238,8 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE"
 
-          # 检查 vars.CF_ROUTE_DOMAIN 是否设置（Repository variables）
-          if [ -n "${{ vars.CF_ROUTE_DOMAIN }}" ]; then
+          # 检查 secrets.CF_ROUTE_DOMAIN 是否设置（Repository secrets）
+          if [ -n "${{ secrets.CF_ROUTE_DOMAIN }}" ]; then
             echo "正在更新 wrangler.toml 添加自定义域名..."
 
             # 读取当前 wrangler.toml 内容
@@ -255,7 +255,7 @@ jobs:
             # 在 wrangler.toml 末尾添加 [[routes]] 配置
             echo '' >> wrangler.toml
             echo '[[routes]]' >> wrangler.toml
-            echo 'pattern = "'"${{ vars.CF_ROUTE_DOMAIN }}"'"' >> wrangler.toml
+            echo 'pattern = "'"${{ secrets.CF_ROUTE_DOMAIN }}"'"' >> wrangler.toml
             echo 'custom_domain = true' >> wrangler.toml
 
             # 设置 workers_dev 为 false 以使用自定义域名
@@ -263,7 +263,7 @@ jobs:
 
             echo "wrangler.toml 中的自定义域名已添加"
           else
-            echo "vars.CF_ROUTE_DOMAIN 未设置，跳过自定义域名配置"
+            echo "secrets.CF_ROUTE_DOMAIN 未设置，跳过自定义域名配置"
           fi
           # echo "输出 wrangler.toml 内容:"
           # cat wrangler.toml

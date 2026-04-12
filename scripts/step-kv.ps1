@@ -193,7 +193,7 @@ function New-KvNamespace {
         $result = Invoke-WithRetry -OperationName "Create KV namespace" -MaxRetries 3 -DelaySeconds 3 -ScriptBlock {
             param([string]$Name)
 
-            $output = npx wrangler kv namespace create $Name --binding "C" --update-config 2>&1 | Out-String
+            $output = npx wrangler kv namespace create $Name --update-config 2>&1 | Out-String
             Write-Log "Wrangler output: $output"
 
             if ($output -match "id = `"(.*?)`"") {

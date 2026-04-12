@@ -5,140 +5,288 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 WRANGLER_TOML="$PROJECT_DIR/wrangler.toml"
 LOG_FILE="$SCRIPT_DIR/step-kv.log"
+BACKUP_DIR="$SCRIPT_DIR/backups"
+MAX_RETRIES=3
+RETRY_DELAY=2
 
 log() {
     local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
-    echo "$msg"
     echo "$msg" >> "$LOG_FILE"
+    echo "$msg" >&2
 }
 
 info() {
     local msg="$1"
-    echo -e "\033[36m$msg\033[0m"
+    echo -e "\033[36m$msg\033[0m" >&2
     log "$msg"
 }
 
 success() {
     local msg="$1"
-    echo -e "\033[32m$msg\033[0m"
+    echo -e "\033[32m$msg\033[0m" >&2
     log "$msg"
 }
 
 warn() {
     local msg="WARN: $1"
-    echo -e "\033[33m$msg\033[0m"
+    echo -e "\033[33m$msg\033[0m" >&2
     log "$msg"
 }
 
 error() {
     local msg="ERROR: $1"
-    echo -e "\033[31m$msg\033[0m"
+    echo -e "\033[31m$msg\033[0m" >&2
     log "$msg"
     exit 1
 }
 
-get_existing_kv_id() {
-    local name="$1"
+initialize_backup_dir() {
+    if [ ! -d "$BACKUP_DIR" ]; then
+        mkdir -p "$BACKUP_DIR"
+        log "Created backup directory: $BACKUP_DIR"
+    fi
+}
 
-    local output
-    output=$(npx wrangler kv namespace list 2>&1) || {
-        return 1
-    }
+backup_config_file() {
+    local file_path="$1"
+    initialize_backup_dir
 
-    if echo "$output" | grep -q "\"title\": \"$name\""; then
-        local kv_id
-        kv_id=$(echo "$output" | grep -oP "\"title\": \"$name\".*?\"id\":\s*\"\K[^\"]+" | head -1)
-        if [ -z "$kv_id" ]; then
-            kv_id=$(echo "$output" | python3 -c "import sys, json; data=json.load(sys.stdin); print(next((item['id'] for item in data if item.get('title')=='$name'), ''))" 2>/dev/null)
-        fi
+    local timestamp
+    timestamp=$(date +"%Y%m%d_%H%M%S")
+    local backup_file="wrangler_${timestamp}.toml"
+    local backup_path="$BACKUP_DIR/$backup_file"
 
-        if [ -n "$kv_id" ]; then
-            echo "$kv_id"
+    if cp "$file_path" "$backup_path"; then
+        log "Backup created: $backup_path"
+        echo "$backup_path"
+    else
+        error "Failed to create backup, aborting to prevent config corruption"
+    fi
+}
+
+retry_operation() {
+    local operation_name="$1"
+    local max_retries="${2:-$MAX_RETRIES}"
+    local delay="${3:-$RETRY_DELAY}"
+    shift 3
+    local func="$@"
+
+    local attempt=1
+    local last_error=""
+
+    while [ $attempt -le $max_retries ]; do
+        log "Attempt $attempt/$max_retries for: $operation_name"
+
+        if eval "$func"; then
             return 0
         fi
+
+        last_error=$?
+        warn "Attempt $attempt failed with exit code: $last_error"
+
+        if [ $attempt -lt $max_retries ]; then
+            log "Retrying in $delay seconds..."
+            sleep $delay
+            delay=$((delay * 2))
+        fi
+
+        attempt=$((attempt + 1))
+    done
+
+    error "$operation_name failed after $max_retries attempts. Last error code: $last_error"
+}
+
+test_input_parameter() {
+    log "Validating input parameter: KV_NAME"
+
+    if [ -z "$KV_NAME" ]; then
+        error "KV name parameter is required but was not provided"
     fi
 
+    if [[ ! "$KV_NAME" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        error "Invalid KV name format. Only alphanumeric characters, underscores, and hyphens are allowed. Provided KV name: $KV_NAME"
+    fi
+
+    success "Input parameter validation passed: $KV_NAME"
+}
+
+test_wrangler_toml_exists() {
+    if [ ! -f "$WRANGLER_TOML" ]; then
+        error "wrangler.toml not found at: $WRANGLER_TOML"
+    fi
+    log "wrangler.toml found at: $WRANGLER_TOML"
+}
+
+get_current_kv_id() {
+    if [ ! -f "$WRANGLER_TOML" ]; then
+        return 1
+    fi
+
+    local kv_id
+    kv_id=$(awk '
+        /^\[\[kv_namespaces\]\]$/ { in_kv=1; next }
+        in_kv && /^[[:space:]]*id[[:space:]]*=/ {
+            match($0, /"[^"]+"/)
+            print substr($0, RSTART+1, RLENGTH-2)
+            exit
+        }
+        /^\[/ { in_kv=0 }
+    ' "$WRANGLER_TOML")
+
+    if [ -n "$kv_id" ]; then
+        echo "$kv_id"
+        return 0
+    fi
+    return 1
+}
+
+get_existing_kv_id() {
+    local name="$1"
+    local attempt=1
+    local delay=$RETRY_DELAY
+
+    while [ $attempt -le $MAX_RETRIES ]; do
+        log "Attempt $attempt/$MAX_RETRIES for: Query KV namespace"
+
+        local output
+        if output=$(npx wrangler kv namespace list 2>&1); then
+            if [ -z "$output" ]; then
+                log "Empty response from wrangler kv namespace list"
+            else
+                if echo "$output" | grep -q "\"title\": \"$name\""; then
+                    local kv_id
+                    kv_id=$(echo "$output" | grep -oP "\"title\": \"$name\".*?\"id\":\s*\"\K[^\"]+" | head -1)
+
+                    if [ -z "$kv_id" ]; then
+                        kv_id=$(echo "$output" | python3 -c "import sys, json; data=json.load(sys.stdin); print(next((item['id'] for item in data if item.get('title')=='$name'), ''))" 2>/dev/null)
+                    fi
+
+                    if [ -n "$kv_id" ]; then
+                        log "Found existing KV: $name with ID: $kv_id"
+                        echo "$kv_id"
+                        return 0
+                    fi
+                fi
+
+                log "KV namespace '$name' does not exist"
+                return 1
+            fi
+        else
+            warn "Attempt $attempt failed: $output"
+        fi
+
+        if [ $attempt -lt $MAX_RETRIES ]; then
+            log "Retrying in $delay seconds..."
+            sleep $delay
+            delay=$((delay * 2))
+        fi
+
+        attempt=$((attempt + 1))
+    done
+
+    log "Failed to query KV namespace after $MAX_RETRIES attempts"
     return 1
 }
 
 create_kv() {
     local name="$1"
-    log "Creating new KV namespace: $name"
+    local attempt=1
+    local delay=$RETRY_DELAY
 
-    local output
-    output=$(npx wrangler kv namespace create "$name" --binding "C" --update-config 2>&1) || {
-        error "KV creation failed: $output"
-    }
+    while [ $attempt -le $MAX_RETRIES ]; do
+        log "Attempt $attempt/$MAX_RETRIES for: Create KV namespace"
 
-    log "Wrangler output: $output"
+        local output
+        if output=$(npx wrangler kv namespace create "$name" 2>&1); then
+            log "Wrangler output: $output"
 
-    if echo "$output" | grep -qE "Error|error|ERROR"; then
-        error "KV creation failed: $output"
-    fi
+            if echo "$output" | grep -qE "Error|error|ERROR"; then
+                warn "KV creation returned error: $output"
+            else
+                local kv_id
+                kv_id=$(echo "$output" | grep -oP 'id = "\K[^"]+' | head -1)
 
-    local kv_id
-    kv_id=$(echo "$output" | grep -oP 'id = "\K[^"]+' | head -1)
+                if [ -n "$kv_id" ]; then
+                    success "KV created successfully with ID: $kv_id"
+                    echo "$kv_id"
+                    return 0
+                fi
 
-    if [ -z "$kv_id" ]; then
-        error "Failed to extract KV ID from output"
-    fi
+                warn "Failed to extract KV ID from output"
+            fi
+        else
+            warn "Attempt $attempt failed: $output"
+        fi
 
-    success "KV created successfully with ID: $kv_id"
-    echo "$kv_id"
+        if [ $attempt -lt $MAX_RETRIES ]; then
+            log "Retrying in $delay seconds..."
+            sleep $delay
+            delay=$((delay * 2))
+        fi
+
+        attempt=$((attempt + 1))
+    done
+
+    error "Failed to create KV namespace after $MAX_RETRIES attempts"
 }
 
 update_wrangler_toml() {
     local kv_id="$1"
     log "Updating wrangler.toml with KV ID: $kv_id"
 
-    if [ ! -f "$WRANGLER_TOML" ]; then
-        error "wrangler.toml not found at: $WRANGLER_TOML"
-    fi
+    local backup_path
+    backup_path=$(backup_config_file "$WRANGLER_TOML")
 
-    local tmp_file="$WRANGLER_TOML.tmp"
-    local updated=false
+    # 转换 CRLF 为 LF，确保跨平台兼容
+    sed -i 's/\r$//' "$WRANGLER_TOML"
 
-    while IFS= read -r line || [ -n "$line" ]; do
-        if echo "$line" | grep -qE '^id\s*='; then
-            echo "id = \"$kv_id\""
-            updated=true
-        else
-            echo "$line"
-        fi
-    done < "$WRANGLER_TOML" > "$tmp_file"
+    # 找到 [[kv_namespaces]] 块后的第一行 id= 替换
+    awk -v new_id="$kv_id" '
+        /^\[\[kv_namespaces\]\]/ { in_kv=1; print; next }
+        in_kv && /^[[:space:]]*id[[:space:]]*=/ {
+            sub(/"[^"]*"/, "\"" new_id "\"")
+            in_kv=0
+        }
+        { print }
+    ' "$WRANGLER_TOML" > "$WRANGLER_TOML.tmp" && mv "$WRANGLER_TOML.tmp" "$WRANGLER_TOML"
 
-    if [ "$updated" = false ]; then
-        if grep -q '\[\[kv_namespaces\]\]' "$WRANGLER_TOML"; then
-            log "Adding KV ID to existing [[kv_namespaces]] section..."
-            rm "$tmp_file"
-            tmp_file="$WRANGLER_TOML.tmp2"
-            local found_kv=false
-            while IFS= read -r line || [ -n "$line" ]; do
-                echo "$line"
-                if echo "$line" | grep -qE '\[\[kv_namespaces\]\]'; then
-                    found_kv=true
-                elif [ "$found_kv" = true ] && echo "$line" | grep -qE '^binding\s*='; then
-                    found_kv=false
-                    echo "id = \"$kv_id\""
-                fi
-            done < "$WRANGLER_TOML" > "$tmp_file"
-        else
-            log "No existing [[kv_namespaces]] section, appending..."
-            echo "" >> "$tmp_file"
-            echo "[[kv_namespaces]]" >> "$tmp_file"
-            echo "binding = \"C\"" >> "$tmp_file"
-            echo "id = \"$kv_id\"" >> "$tmp_file"
-        fi
-    fi
-
-    mv "$tmp_file" "$WRANGLER_TOML"
-    rm -f "$WRANGLER_TOML.tmp2" 2>/dev/null
     success "wrangler.toml updated successfully"
+    return 0
+}
+
+test_config_update() {
+    local expected_kv_id="$1"
+    log "Verifying config update..."
+
+    if [ ! -f "$WRANGLER_TOML" ]; then
+        error "Config verification failed - wrangler.toml not found"
+    fi
+
+    local actual_id
+    actual_id=$(awk '
+        /^\[\[kv_namespaces\]\]/ { in_kv=1; next }
+        in_kv && /^[[:space:]]*id[[:space:]]*=/ {
+            match($0, /"[^"]+"/)
+            print substr($0, RSTART+1, RLENGTH-2)
+            exit
+        }
+    ' "$WRANGLER_TOML")
+
+    if [ -z "$actual_id" ]; then
+        error "Config verification failed - No KV ID found in config"
+    fi
+
+    if [ "$actual_id" = "$expected_kv_id" ]; then
+        success "Config verification passed - KV ID correctly written: $actual_id"
+        return 0
+    else
+        error "Config verification failed - Expected: $expected_kv_id, Found: $actual_id"
+    fi
 }
 
 find_documentation_files() {
     local doc_extensions=("md" "txt" "json" "yaml" "yml")
-    local exclude_dirs=("node_modules" ".git" "dist" "build" "coverage")
+    local exclude_dirs=("node_modules" ".git" "dist" "build" "coverage" "scripts" "backups")
     local find_exclude=""
 
     for dir in "${exclude_dirs[@]}"; do
@@ -189,35 +337,14 @@ update_documentation_kv_id() {
     fi
 }
 
-get_current_kv_id() {
-    if [ ! -f "$WRANGLER_TOML" ]; then
-        return 1
-    fi
-
-    local kv_id
-    kv_id=$(grep -oP 'id\s*=\s*"\K[^"]+' "$WRANGLER_TOML" | head -1)
-
-    if [ -n "$kv_id" ]; then
-        echo "$kv_id"
-        return 0
-    fi
-    return 1
-}
-
 main() {
-    if [ -z "$KV_NAME" ]; then
-        echo "Usage: $0 <KVName>"
-        echo "Example: $0 my-kv"
-        exit 1
-    fi
-
     echo ""
     info "========== KV Namespace Management =========="
     log "Starting KV namespace management for: $KV_NAME"
+    echo ""
 
-    if [ ! -f "$WRANGLER_TOML" ]; then
-        error "wrangler.toml not found at: $WRANGLER_TOML"
-    fi
+    test_input_parameter
+    test_wrangler_toml_exists
 
     local current_kv_id
     current_kv_id=$(get_current_kv_id) || current_kv_id=""
@@ -227,15 +354,9 @@ main() {
 
     cd "$PROJECT_DIR"
 
-    log "Checking if KV namespace '$KV_NAME' already exists..."
+    log "Step 1: Query KV namespace status..."
     local existing_kv_id
     existing_kv_id=$(get_existing_kv_id "$KV_NAME") || existing_kv_id=""
-
-    if [ -n "$existing_kv_id" ]; then
-        log "Found existing KV: $KV_NAME with ID: $existing_kv_id"
-    else
-        log "KV namespace '$KV_NAME' does not exist"
-    fi
 
     local kv_id_to_use=""
     local is_new_kv=false
@@ -246,6 +367,14 @@ main() {
 
         if [ "$existing_kv_id" = "$current_kv_id" ]; then
             info "Current wrangler.toml already uses this KV ID, no update needed"
+            success "========== SUCCESS =========="
+            success "Using existing KV namespace: $KV_NAME"
+            success "KV ID: $kv_id_to_use"
+            success "wrangler.toml: Already up to date"
+            echo ""
+            info "Next: npm run deploy"
+            log "Done"
+            return
         else
             info "Updating wrangler.toml to use existing KV ID..."
             if ! update_wrangler_toml "$kv_id_to_use"; then
@@ -256,7 +385,7 @@ main() {
             fi
         fi
     else
-        info "KV namespace '$KV_NAME' does not exist, creating new one..."
+        log "Step 2: Creating new KV namespace..."
         kv_id_to_use=$(create_kv "$KV_NAME")
 
         if [ -z "$kv_id_to_use" ]; then
@@ -265,6 +394,7 @@ main() {
 
         is_new_kv=true
 
+        log "Step 3: Updating wrangler.toml..."
         if ! update_wrangler_toml "$kv_id_to_use"; then
             error "Failed to update wrangler.toml"
         fi
@@ -272,6 +402,11 @@ main() {
         if [ -n "$current_kv_id" ]; then
             update_documentation_kv_id "$current_kv_id" "$kv_id_to_use" "$KV_NAME"
         fi
+    fi
+
+    log "Step 4: Verifying configuration update..."
+    if ! test_config_update "$kv_id_to_use"; then
+        error "Configuration verification failed, please check the config file manually"
     fi
 
     echo ""
@@ -282,10 +417,10 @@ main() {
         success "Using existing KV namespace: $KV_NAME"
     fi
     success "KV ID: $kv_id_to_use"
-    success "wrangler.toml: Updated"
+    success "wrangler.toml: Updated and verified"
     echo ""
     info "Next: npm run deploy"
-    log "Done"
+    log "Done - All steps completed successfully"
 }
 
 main "$@"
